@@ -14,10 +14,14 @@ import {
   WORM_RADIUS,
   EXPLOSION_RADIUS,
   windFromTerrainSeed,
+  makeLCG,
 } from './types';
 
 type Particle = { x: number; y: number; vx: number; vy: number; life: number; color: string };
 type Star = { x: number; y: number; r: number; a: number };
+
+const AIM_COARSE = 0.08;
+const AIM_FINE = 0.12;
 
 function drawWorm(
   ctx: CanvasRenderingContext2D,
@@ -82,7 +86,6 @@ export default function App() {
   const [power, setPower] = useState(50);
   const [isFiring, setIsFiring] = useState(false);
 
-  // Refs so the game loop always reads current values without restarting
   const isMyTurnRef = useRef(false);
   const aimAngleRef = useRef(0);
   const powerRef = useRef(50);
@@ -94,23 +97,16 @@ export default function App() {
   const shakeRef = useRef(0);
   const terrainSeedRef = useRef(0);
 
-  // Sync state → refs
   const setIsMyTurnSynced = (v: boolean) => { isMyTurnRef.current = v; setIsMyTurn(v); };
   const setIsFiringSynced = (v: boolean) => { isFiringRef.current = v; setIsFiring(v); };
 
-  // Initialize Terrain — seeded PRNG so both clients get identical dirt patches
   const generateTerrain = useCallback((seed: number) => {
     const canvas = terrainCanvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Simple LCG seeded random
-    let s = seed * 1000000;
-    const rand = () => {
-      s = (s * 9301 + 49297) % 233280;
-      return s / 233280;
-    };
+    const rand = makeLCG(seed * 1000000);
 
     ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
     ctx.fillStyle = '#4d7c0f';
@@ -138,11 +134,7 @@ export default function App() {
 
     gameStateRef.current.terrainData = ctx.getImageData(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT).data;
     terrainSeedRef.current = seed;
-    let s2 = seed * 76543.13;
-    const rand2 = () => {
-      s2 = (s2 * 9301 + 49297) % 233280;
-      return s2 / 233280;
-    };
+    const rand2 = makeLCG(seed * 76543.13);
     starsRef.current = Array.from({ length: 140 }, () => ({
       x: rand2() * CANVAS_WIDTH,
       y: rand2() * CANVAS_HEIGHT * 0.52,
@@ -151,13 +143,12 @@ export default function App() {
     }));
   }, []);
 
-  const checkTerrainCollision = (x: number, y: number) => {
-    const canvas = terrainCanvasRef.current;
-    if (!canvas) return false;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return false;
-    const pixel = ctx.getImageData(Math.floor(x), Math.floor(y), 1, 1).data;
-    return pixel[3] > 0;
+  const checkTerrainCollision = (x: number, y: number): boolean => {
+    const data = gameStateRef.current.terrainData;
+    if (!data) return false;
+    const px = Math.floor(x), py = Math.floor(y);
+    if (px < 0 || px >= CANVAS_WIDTH || py < 0 || py >= CANVAS_HEIGHT) return false;
+    return data[(py * CANVAS_WIDTH + px) * 4 + 3] > 0;
   };
 
   const explode = useCallback((ex: number, ey: number) => {
@@ -171,12 +162,9 @@ export default function App() {
     ctx.arc(ex, ey, EXPLOSION_RADIUS, 0, Math.PI * 2);
     ctx.fill();
     ctx.globalCompositeOperation = 'source-over';
+    gameStateRef.current.terrainData = ctx.getImageData(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT).data;
 
-    let pSeed = ex * 17.17 + ey * 31.97;
-    const pr = () => {
-      pSeed = (pSeed * 9301 + 49297) % 233280;
-      return pSeed / 233280;
-    };
+    const pr = makeLCG(ex * 17.17 + ey * 31.97);
     for (let i = 0; i < 32; i++) {
       const ang = pr() * Math.PI * 2;
       const spd = 1.8 + pr() * 7;
@@ -200,10 +188,10 @@ export default function App() {
       return w;
     });
 
-    // Check for game over — use ref worms, not stale room state
-    const alivePlayers = new Set(gameStateRef.current.worms.filter(w => w.hp > 0).map(w => w.playerId));
-    if (alivePlayers.size === 1) {
-      const winnerId = Array.from(alivePlayers)[0];
+    // Use ref worms here — room state is stale inside this useCallback closure
+    const alive = gameStateRef.current.worms.filter(w => w.hp > 0);
+    if (alive.length > 0 && alive.every(w => w.playerId === alive[0].playerId)) {
+      const winnerId = alive[0].playerId;
       setRoom(prev => {
         if (!prev || prev.players.length <= 1) return prev;
         const winPlayer = prev.players.find((p: Player) => p.id === winnerId);
@@ -216,7 +204,6 @@ export default function App() {
     }
   }, []);
 
-  // Socket event handlers — no `room` in deps to avoid re-registering on every state update
   useEffect(() => {
     socket.on('room-update', (updatedRoom: GameRoom) => {
       setRoom(updatedRoom);
@@ -273,11 +260,10 @@ export default function App() {
     };
   }, []);
 
-  // Generate terrain after the canvas is mounted (can't do this in socket handler — canvas isn't in DOM yet)
+  // Terrain generation must be deferred until this component mounts — the canvas isn't in the DOM inside socket handlers
   useEffect(() => {
     if (room?.gameState !== 'playing' || room.terrainSeed == null) return;
     generateTerrain(room.terrainSeed);
-    // Snap worms to terrain surface so they don't have to fall from y=0
     gameStateRef.current.worms = gameStateRef.current.worms.map(w => {
       for (let y = 0; y < CANVAS_HEIGHT; y++) {
         if (checkTerrainCollision(w.x, y + WORM_RADIUS)) {
@@ -288,7 +274,6 @@ export default function App() {
     });
   }, [room?.gameState, room?.terrainSeed, generateTerrain]);
 
-  // Game Loop — only restarts when game state changes, not on every aim/power tweak
   useEffect(() => {
     if (!room || room.gameState !== 'playing') return;
 
@@ -302,17 +287,18 @@ export default function App() {
     const update = () => {
       const wind = windFromTerrainSeed(terrainSeedRef.current);
 
-      particlesRef.current = particlesRef.current.filter(pt => {
-        pt.life -= 0.018;
-        if (pt.life <= 0) return false;
-        pt.x += pt.vx;
-        pt.y += pt.vy;
-        pt.vy += 0.1;
-        pt.vx *= 0.99;
-        return true;
-      });
+      if (particlesRef.current.length > 0) {
+        particlesRef.current = particlesRef.current.filter(pt => {
+          pt.life -= 0.018;
+          if (pt.life <= 0) return false;
+          pt.x += pt.vx;
+          pt.y += pt.vy;
+          pt.vy += 0.1;
+          pt.vx *= 0.99;
+          return true;
+        });
+      }
 
-      // Update Projectiles
       gameStateRef.current.projectiles = gameStateRef.current.projectiles.filter(p => {
         p.vy += GRAVITY;
         p.vx += wind;
@@ -337,7 +323,6 @@ export default function App() {
         return true;
       });
 
-      // Update Worms (vertical velocity + terrain)
       gameStateRef.current.worms = gameStateRef.current.worms.map(w => {
         if (w.hp <= 0) return w;
         let vy = w.vy ?? 0;
@@ -361,7 +346,6 @@ export default function App() {
         return { ...w, x: newX, y: newY, vy };
       });
 
-      // Draw
       ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
       ctx.save();
       const sk = shakeRef.current;
@@ -370,10 +354,17 @@ export default function App() {
         shakeRef.current *= 0.9;
       }
 
+      const starsByAlpha = new Map<number, Star[]>();
       for (const st of starsRef.current) {
-        ctx.fillStyle = `rgba(255,255,255,${st.a})`;
+        const key = Math.round(st.a * 10) / 10;
+        let bucket = starsByAlpha.get(key);
+        if (!bucket) { bucket = []; starsByAlpha.set(key, bucket); }
+        bucket.push(st);
+      }
+      for (const [alpha, bucket] of starsByAlpha) {
+        ctx.fillStyle = `rgba(255,255,255,${alpha})`;
         ctx.beginPath();
-        ctx.arc(st.x, st.y, st.r, 0, Math.PI * 2);
+        for (const st of bucket) ctx.arc(st.x, st.y, st.r, 0, Math.PI * 2);
         ctx.fill();
       }
 
@@ -551,10 +542,10 @@ export default function App() {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'ArrowLeft') handleMove(-1);
       if (e.key === 'ArrowRight') handleMove(1);
-      if (e.key === 'ArrowUp') aimAngleRef.current -= 0.08;
-      if (e.key === 'ArrowDown') aimAngleRef.current += 0.08;
-      if (e.key === 'q' || e.key === 'Q') aimAngleRef.current -= 0.12;
-      if (e.key === 'e' || e.key === 'E') aimAngleRef.current += 0.12;
+      if (e.key === 'ArrowUp') aimAngleRef.current -= AIM_COARSE;
+      if (e.key === 'ArrowDown') aimAngleRef.current += AIM_COARSE;
+      if (e.key === 'q' || e.key === 'Q') aimAngleRef.current -= AIM_FINE;
+      if (e.key === 'e' || e.key === 'E') aimAngleRef.current += AIM_FINE;
       if (e.key === 'w' || e.key === 'W') {
         e.preventDefault();
         handleJump();
@@ -568,18 +559,15 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [handleMove, handleFire, handleJump]);
 
-  // Sync power state → ref
   const handlePowerChange = (v: number) => {
     powerRef.current = v;
     setPower(v);
   };
 
-  // Keep roomIdRef in sync with room state
   useEffect(() => {
     if (room?.id) roomIdRef.current = room.id;
   }, [room?.id]);
 
-  // Cleanup fire timeout on unmount
   useEffect(() => {
     return () => {
       if (fireTimeoutRef.current) clearTimeout(fireTimeoutRef.current);
@@ -700,22 +688,23 @@ export default function App() {
             <span className="font-bold tracking-tight">WORMS CLONE</span>
           </div>
           <div className="h-4 w-px bg-zinc-800" />
-          {room?.terrainSeed != null && (
-            <div
-              className="flex items-center gap-2 px-3 py-1 rounded-lg bg-sky-500/10 border border-sky-500/25 text-sky-200"
-              title="Wind pushes shots each frame; same for every player in this match."
-            >
-              <Wind
-                className="w-4 h-4 shrink-0"
-                style={{
-                  transform: `scaleX(${windFromTerrainSeed(room.terrainSeed) >= 0 ? 1 : -1})`,
-                }}
-              />
-              <span className="text-[11px] font-semibold tabular-nums">
-                {(windFromTerrainSeed(room.terrainSeed) * 1000).toFixed(1)}
-              </span>
-            </div>
-          )}
+          {room?.terrainSeed != null && (() => {
+            const wind = windFromTerrainSeed(room.terrainSeed);
+            return (
+              <div
+                className="flex items-center gap-2 px-3 py-1 rounded-lg bg-sky-500/10 border border-sky-500/25 text-sky-200"
+                title="Wind pushes shots each frame; same for every player in this match."
+              >
+                <Wind
+                  className="w-4 h-4 shrink-0"
+                  style={{ transform: `scaleX(${wind >= 0 ? 1 : -1})` }}
+                />
+                <span className="text-[11px] font-semibold tabular-nums">
+                  {(wind * 1000).toFixed(1)}
+                </span>
+              </div>
+            );
+          })()}
           <div className="h-4 w-px bg-zinc-800" />
           <div className="flex items-center gap-4">
             {room?.players.map((p, i) => (
