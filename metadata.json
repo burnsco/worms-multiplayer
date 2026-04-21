@@ -1,0 +1,5 @@
+{
+  "name": "Worms Multiplayer",
+  "description": "A full-stack multiplayer Worms clone with destructible terrain, turn-based physics, and real-time WebSocket synchronization.",
+  "requestFramePermissions": []
+}
