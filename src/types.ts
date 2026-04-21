@@ -9,10 +9,12 @@ export interface Worm {
   playerId: string;
   x: number;
   y: number;
+  vx: number;
   vy: number;
   hp: number;
   name: string;
   color: string;
+  facing: -1 | 1;
 }
 
 export interface GameRoom {
@@ -22,22 +24,39 @@ export interface GameRoom {
   turnIndex: number;
   worms: Worm[];
   terrainSeed: number;
+  activeWormId?: string;
+  turnEndsAt?: number;
+  winnerId?: string;
 }
 
 export interface Projectile {
+  id: string;
+  ownerId: string;
   x: number;
   y: number;
   vx: number;
   vy: number;
   radius: number;
-  type: 'bazooka' | 'grenade';
+  type: WeaponType;
+  fuse: number | null;
+  age: number;
+  bounces: number;
 }
+
+export type WeaponType = 'bazooka' | 'grenade';
 
 export const CANVAS_WIDTH = 1200;
 export const CANVAS_HEIGHT = 600;
 export const GRAVITY = 0.2;
 export const WORM_RADIUS = 10;
-export const EXPLOSION_RADIUS = 40;
+export const EXPLOSION_RADIUS = 48;
+export const WORMS_PER_PLAYER = 3;
+export const TURN_TIME_SECONDS = 35;
+export const MAX_STEP_HEIGHT = 12;
+export const MOVE_SPEED = 4;
+export const JUMP_IMPULSE = -7.6;
+export const BAZOOKA_DAMAGE = 70;
+export const GRENADE_DAMAGE = 58;
 
 /** Horizontal acceleration applied to projectiles each frame; derived from room seed so all clients match. */
 export function windFromTerrainSeed(seed: number): number {
