@@ -1,20 +1,74 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# Worms Multiplayer
 
-# Run and deploy your AI Studio app
+Standalone multiplayer Worms-style battle game with destructible terrain, turn-based physics, and real-time Socket.IO sync. No Google services, just the game.
 
-This contains everything you need to run your app locally.
+## Highlights
 
-View your app in AI Studio: https://ai.studio/apps/06c9128e-0cb5-4b0d-98ec-08201f44351e
+- Destructible terrain with procedural map generation
+- Turn-based multiplayer over WebSockets
+- Bazooka and grenade weapons
+- Worm movement, jumping, aiming, and timed turns
+- Responsive canvas UI with lobby, match, and winner screens
 
-## Run Locally
+## Getting Started
 
-**Prerequisites:**  Node.js
+### Prerequisites
 
+- Node.js 20+ or Bun
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+### Install
+
+```bash
+bun install
+```
+
+### Run locally
+
+```bash
+bun run dev
+```
+
+The app runs on `http://localhost:3000` by default.
+
+## Controls
+
+### Lobby
+
+- Enter a username and room code
+- Join an existing room or create a new one by using a new room code
+- Start the match once at least 2 players have joined
+
+### During a match
+
+- `Left` / `Right`: move your active worm
+- `W`: jump
+- `Up` / `Down`: coarse aim adjustment
+- `Q` / `E`: fine aim adjustment
+- `1` / `2`: switch between bazooka and grenade
+- Mouse wheel: adjust shot power
+- Hold left mouse button on the arena: charge a shot
+- Release left mouse button: fire
+- `Space`: fire at the current power level
+
+## Scripts
+
+- `bun run dev`: start the game server in development mode
+- `bun run build`: build the client for production
+- `bun run preview`: preview the production build
+- `bun run lint`: run TypeScript type-checking
+- `bun run clean`: remove the `dist` directory
+
+## Tech Stack
+
+- React 19
+- Vite
+- Express
+- Socket.IO
+- Canvas API
+- TypeScript
+
+## Notes
+
+- The game server is defined in [`server.ts`](./server.ts)
+- Shared gameplay constants and types live in [`src/types.ts`](./src/types.ts)
+- The browser title is set in [`index.html`](./index.html)
