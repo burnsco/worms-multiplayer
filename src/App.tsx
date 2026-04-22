@@ -1,7 +1,5 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, type PointerEvent as ReactPointerEvent } from 'react';
 import { io, Socket } from 'socket.io-client';
-import { motion, AnimatePresence } from 'motion/react';
-import { Users, Play, Target, Zap, Trophy, ArrowRight, Wind, Clock, Bomb } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import {
   GameRoom,
@@ -18,91 +16,32 @@ import {
   MOVE_SPEED,
   JUMP_IMPULSE,
   BAZOOKA_DAMAGE,
-  GRENADE_DAMAGE,
   windFromTerrainSeed,
   makeLCG,
 } from './types';
+import { JoinScreen } from './components/join/JoinScreen';
+import { LobbyScreen } from './components/lobby/LobbyScreen';
+import { GameArena } from './components/game/GameArena';
+import { GameHeader } from './components/game/GameHeader';
+import { TurnControls } from './components/game/TurnControls';
+import { WinnerModal } from './components/game/WinnerModal';
+import { drawWorm, roundedRect } from './game/canvasDraw';
+import { chargePowerPercent } from './game/charge';
+import {
+  AIM_COARSE,
+  AIM_FINE,
+  MAX_AIM,
+  MIN_AIM,
+  POWER_MAX,
+  POWER_MIN,
+  PROJECTILE_RADIUS,
+  TURN_END_DELAY_MS,
+  WEAPON_CONFIG,
+} from './game/constants';
+import { aimAngleFromPointer, canvasPointFromClient, clamp, distance } from './game/math';
 
 type Particle = { x: number; y: number; vx: number; vy: number; life: number; color: string };
 type Star = { x: number; y: number; r: number; a: number };
-
-const AIM_COARSE = 0.08;
-const AIM_FINE = 0.025;
-const MIN_AIM = -Math.PI + 0.08;
-const MAX_AIM = -0.08;
-const TURN_END_DELAY_MS = 900;
-const GRENADE_FUSE_FRAMES = 145;
-const PROJECTILE_RADIUS = 5;
-const WEAPON_CONFIG: Record<WeaponType, { label: string; damage: number; fuse: number | null; speedScale: number }> = {
-  bazooka: { label: 'Bazooka', damage: BAZOOKA_DAMAGE, fuse: null, speedScale: 1 },
-  grenade: { label: 'Grenade', damage: GRENADE_DAMAGE, fuse: GRENADE_FUSE_FRAMES, speedScale: 0.82 },
-};
-
-const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
-const distance = (ax: number, ay: number, bx: number, by: number) => Math.hypot(ax - bx, ay - by);
-
-function roundedRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
-  const radius = Math.min(r, w / 2, h / 2);
-  ctx.beginPath();
-  ctx.moveTo(x + radius, y);
-  ctx.lineTo(x + w - radius, y);
-  ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
-  ctx.lineTo(x + w, y + h - radius);
-  ctx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
-  ctx.lineTo(x + radius, y + h);
-  ctx.quadraticCurveTo(x, y + h, x, y + h - radius);
-  ctx.lineTo(x, y + radius);
-  ctx.quadraticCurveTo(x, y, x + radius, y);
-  ctx.closePath();
-}
-
-function drawWorm(
-  ctx: CanvasRenderingContext2D,
-  w: Worm,
-  opts: { aimAngle?: number; isActive?: boolean }
-) {
-  const { aimAngle = 0, isActive } = opts;
-  const r = WORM_RADIUS;
-  ctx.save();
-  ctx.fillStyle = 'rgba(3, 7, 18, 0.28)';
-  ctx.beginPath();
-  ctx.ellipse(w.x, w.y + r + 4, r * 1.15, 3.4, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  const g = ctx.createRadialGradient(w.x - 4, w.y - 5, 1, w.x, w.y, r + 4);
-  g.addColorStop(0, 'rgba(255,255,255,0.35)');
-  g.addColorStop(0.45, w.color);
-  g.addColorStop(1, 'rgba(0,0,0,0.25)');
-  ctx.fillStyle = g;
-  ctx.beginPath();
-  ctx.arc(w.x, w.y, r, 0, Math.PI * 2);
-  ctx.fill();
-  if (isActive) {
-    ctx.shadowColor = 'rgba(16, 185, 129, 0.65)';
-    ctx.shadowBlur = 12;
-    ctx.strokeStyle = 'rgba(236,253,245,0.88)';
-    ctx.lineWidth = 2.5;
-    ctx.stroke();
-    ctx.shadowBlur = 0;
-  } else {
-    ctx.strokeStyle = 'rgba(0,0,0,0.4)';
-    ctx.lineWidth = 2;
-    ctx.stroke();
-  }
-  const lx = Math.cos(aimAngle) * 2.5;
-  const ly = Math.sin(aimAngle) * 1.2;
-  ctx.fillStyle = '#f8fafc';
-  ctx.beginPath();
-  ctx.arc(w.x - 4 + lx, w.y - 3 + ly, 2.4, 0, Math.PI * 2);
-  ctx.arc(w.x + 4 + lx, w.y - 3 + ly, 2.4, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#0f172a';
-  ctx.beginPath();
-  ctx.arc(w.x - 4 + lx * 1.3, w.y - 3 + ly * 1.1, 1.1, 0, Math.PI * 2);
-  ctx.arc(w.x + 4 + lx * 1.3, w.y - 3 + ly * 1.1, 1.1, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
-}
 
 const socket: Socket = io();
 
@@ -146,6 +85,9 @@ export default function App() {
   const selectedWeaponRef = useRef<WeaponType>('bazooka');
   const pendingTurnEndRef = useRef(false);
   const lastSyncRef = useRef(0);
+  const isPointerChargingRef = useRef(false);
+  const pointerChargeRafRef = useRef<number | null>(null);
+  const pointerCaptureListenersRef = useRef<{ up: (e: PointerEvent) => void; cancel: (e: PointerEvent) => void } | null>(null);
 
   const setIsMyTurnSynced = (v: boolean) => { isMyTurnRef.current = v; setIsMyTurn(v); };
   const setIsFiringSynced = (v: boolean) => { isFiringRef.current = v; setIsFiring(v); };
@@ -153,10 +95,10 @@ export default function App() {
 
   const currentPlayerId = () => socket.id;
 
-  const getActiveWorm = () => {
+  const getActiveWorm = useCallback(() => {
     const activeId = activeWormIdRef.current;
     return gameStateRef.current.worms.find(w => w.id === activeId && w.hp > 0) ?? null;
-  };
+  }, []);
 
   const setActiveTurn = useCallback((turnIndex: number, activeWormId?: string, turnEndsAt?: number) => {
     activeWormIdRef.current = activeWormId ?? null;
@@ -741,8 +683,10 @@ export default function App() {
   }, [room?.gameState, explode, requestTurnEnd, syncWormState]);
 
   const handleJoin = () => {
-    if (username && roomId) {
-      socket.emit('join-room', { roomId, username });
+    const cleanUsername = username.trim();
+    const cleanRoomId = roomId.trim();
+    if (cleanUsername && cleanRoomId) {
+      socket.emit('join-room', { roomId: cleanRoomId, username: cleanUsername });
       setInRoom(true);
     }
   };
@@ -805,6 +749,71 @@ export default function App() {
       }
     });
   }, []);
+
+  const endPointerChargeSession = useCallback((fire: boolean) => {
+    if (pointerChargeRafRef.current != null) {
+      cancelAnimationFrame(pointerChargeRafRef.current);
+      pointerChargeRafRef.current = null;
+    }
+    const wasCharging = isPointerChargingRef.current;
+    isPointerChargingRef.current = false;
+    const listeners = pointerCaptureListenersRef.current;
+    if (listeners) {
+      window.removeEventListener('pointerup', listeners.up);
+      window.removeEventListener('pointercancel', listeners.cancel);
+      pointerCaptureListenersRef.current = null;
+    }
+    if (fire && wasCharging) handleFire();
+  }, [handleFire]);
+
+  const updateAimFromClient = useCallback((clientX: number, clientY: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const myWorm = getActiveWorm();
+    if (!myWorm || myWorm.playerId !== socket.id) return;
+    const { x, y } = canvasPointFromClient(canvas, clientX, clientY);
+    aimAngleRef.current = aimAngleFromPointer(myWorm.x, myWorm.y, x, y, MIN_AIM, MAX_AIM);
+  }, [getActiveWorm]);
+
+  const startPointerCharge = useCallback(() => {
+    if (!isMyTurnRef.current || isFiringRef.current || isPointerChargingRef.current) return;
+    const myWorm = getActiveWorm();
+    if (!myWorm || myWorm.playerId !== socket.id || !isGrounded(myWorm)) return;
+
+    isPointerChargingRef.current = true;
+    const chargeStart = performance.now();
+
+    const tick = () => {
+      if (!isPointerChargingRef.current) return;
+      const w = getActiveWorm();
+      if (!w || w.playerId !== socket.id) {
+        endPointerChargeSession(false);
+        return;
+      }
+      const elapsed = performance.now() - chargeStart;
+      const p = chargePowerPercent(elapsed);
+      powerRef.current = p;
+      setPower(p);
+      if (p >= POWER_MAX) {
+        endPointerChargeSession(true);
+        return;
+      }
+      pointerChargeRafRef.current = requestAnimationFrame(tick);
+    };
+
+    pointerChargeRafRef.current = requestAnimationFrame(tick);
+
+    const onUp = (e: PointerEvent) => {
+      if (e.button !== 0) return;
+      endPointerChargeSession(true);
+    };
+    const onCancel = () => {
+      endPointerChargeSession(false);
+    };
+    pointerCaptureListenersRef.current = { up: onUp, cancel: onCancel };
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onCancel);
+  }, [endPointerChargeSession, getActiveWorm]);
 
   const handleMove = useCallback((dir: number) => {
     if (!isMyTurnRef.current || isFiringRef.current) return;
@@ -908,14 +917,38 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [handleMove, handleFire, handleJump]);
 
-  const handlePowerChange = (v: number) => {
-    powerRef.current = v;
-    setPower(v);
-  };
+  const handlePowerChange = useCallback((v: number) => {
+    const next = clamp(v, POWER_MIN, POWER_MAX);
+    powerRef.current = next;
+    setPower(next);
+  }, []);
 
   const handleWeaponChange = (weapon: WeaponType) => {
     setSelectedWeaponSynced(weapon);
   };
+
+  const handleArenaPointerMove = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!isMyTurnRef.current || isFiringRef.current) return;
+    updateAimFromClient(e.clientX, e.clientY);
+  }, [updateAimFromClient]);
+
+  const handleArenaPointerDown = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    const el = e.target as HTMLElement;
+    if (el.closest('button, input, textarea, a, [data-arena-controls]')) return;
+    if (!isMyTurnRef.current || isFiringRef.current) return;
+    e.preventDefault();
+    updateAimFromClient(e.clientX, e.clientY);
+    startPointerCharge();
+  }, [startPointerCharge, updateAimFromClient]);
+
+  const handleArenaWheel = useCallback((e: WheelEvent) => {
+    if (!isMyTurnRef.current || isFiringRef.current) return;
+    if ((e.target as HTMLElement).closest('button, input, textarea, a, [data-arena-controls]')) return;
+    e.preventDefault();
+    const step = (e.deltaY < 0 ? 1 : -1) * (e.shiftKey ? 10 : 5);
+    handlePowerChange(powerRef.current + step);
+  }, [handlePowerChange]);
 
   useEffect(() => {
     if (room?.id) roomIdRef.current = room.id;
@@ -939,284 +972,69 @@ export default function App() {
     return () => {
       if (fireTimeoutRef.current) clearTimeout(fireTimeoutRef.current);
       if (turnEndTimeoutRef.current) clearTimeout(turnEndTimeoutRef.current);
+      endPointerChargeSession(false);
     };
-  }, []);
+  }, [endPointerChargeSession]);
+
+  useEffect(() => {
+    if (!isMyTurn || room?.gameState !== 'playing') endPointerChargeSession(false);
+  }, [isMyTurn, room?.gameState, endPointerChargeSession]);
 
   if (!inRoom) {
     return (
-      <div className="min-h-screen bg-zinc-950 text-zinc-100 flex items-center justify-center p-4 font-sans">
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-2xl p-8 shadow-2xl"
-        >
-          <div className="flex items-center gap-3 mb-8">
-            <div className="p-3 bg-emerald-500/10 rounded-xl">
-              <Zap className="w-8 h-8 text-emerald-500" />
-            </div>
-            <div>
-              <h1 className="text-2xl font-bold tracking-tight">Worms Multiplayer</h1>
-              <p className="text-zinc-500 text-sm">Destructible terrain battle</p>
-            </div>
-          </div>
-
-          <div className="space-y-4">
-            <div>
-              <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider mb-1.5">Username</label>
-              <input
-                type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
-                placeholder="Enter your name"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider mb-1.5">Room ID</label>
-              <input
-                type="text"
-                value={roomId}
-                onChange={(e) => setRoomId(e.target.value)}
-                className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
-                placeholder="Enter room code"
-              />
-            </div>
-            <button
-              onClick={handleJoin}
-              disabled={!username || !roomId}
-              className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold py-4 rounded-xl transition-all flex items-center justify-center gap-2 group"
-            >
-              Join Battle
-              <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
-            </button>
-          </div>
-        </motion.div>
-      </div>
+      <JoinScreen
+        username={username}
+        roomId={roomId}
+        onUsernameChange={setUsername}
+        onRoomIdChange={setRoomId}
+        onJoin={handleJoin}
+      />
     );
   }
 
   if (room?.gameState === 'lobby') {
+    return <LobbyScreen room={room} selfId={socket.id} onStart={handleStart} />;
+  }
+
+  if (!room) {
     return (
       <div className="min-h-screen bg-zinc-950 text-zinc-100 flex items-center justify-center p-4 font-sans">
-        <motion.div
-          initial={{ opacity: 0, scale: 0.95 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="w-full max-w-2xl bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden shadow-2xl"
-        >
-          <div className="p-8 border-b border-zinc-800 flex items-center justify-between bg-zinc-900/50">
-            <div className="flex items-center gap-3">
-              <Users className="w-6 h-6 text-emerald-500" />
-              <h2 className="text-xl font-bold">Lobby: {room.id}</h2>
-            </div>
-            <div className="px-3 py-1 bg-emerald-500/10 text-emerald-500 rounded-full text-xs font-bold uppercase tracking-widest">
-              Waiting for Players
-            </div>
+        <div className="w-full max-w-md rounded-2xl border border-zinc-800 bg-zinc-900 p-8 text-center shadow-2xl">
+          <div className="mb-4 text-xs font-bold uppercase tracking-[0.3em] text-emerald-400">
+            Connecting
           </div>
-
-          <div className="p-8">
-            <div className="grid grid-cols-2 gap-4 mb-8">
-              {room.players.map((p) => (
-                <motion.div
-                  key={p.id}
-                  initial={{ opacity: 0, x: -10 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  className="flex items-center gap-3 p-4 bg-zinc-950 border border-zinc-800 rounded-xl"
-                >
-                  <div className="w-3 h-3 rounded-full" style={{ backgroundColor: p.color }} />
-                  <span className="font-medium">{p.username}</span>
-                  {p.id === socket.id && <span className="ml-auto text-[10px] text-zinc-500 font-bold uppercase">You</span>}
-                </motion.div>
-              ))}
-            </div>
-
-            <button
-              onClick={handleStart}
-              disabled={room.players.length < 2}
-              className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold py-4 rounded-xl transition-all flex items-center justify-center gap-2"
-            >
-              <Play className="w-5 h-5 fill-current" />
-              Start Game
-            </button>
-            {room.players.length < 2 && (
-              <p className="text-center text-zinc-500 text-sm mt-4">Need at least 2 players to start</p>
-            )}
-          </div>
-        </motion.div>
+          <h1 className="text-2xl font-bold tracking-tight">Loading room state</h1>
+          <p className="mt-3 text-sm text-zinc-400">
+            Waiting for the server to finish syncing your match.
+          </p>
+        </div>
       </div>
     );
   }
 
   return (
     <div className="min-h-screen bg-[#090a0f] text-zinc-100 flex flex-col font-sans overflow-hidden">
-      {/* Game Header */}
-      <div className="h-16 bg-[#17181f]/95 border-b border-white/10 flex items-center justify-between px-6 shrink-0 shadow-lg shadow-black/20">
-        <div className="flex items-center gap-6">
-          <div className="flex items-center gap-2">
-            <Zap className="w-5 h-5 text-emerald-500" />
-            <span className="font-bold tracking-tight">WORMS ARENA</span>
-          </div>
-          <div className="h-4 w-px bg-white/10" />
-          {room?.terrainSeed != null && (() => {
-            const wind = windFromTerrainSeed(room.terrainSeed);
-            return (
-              <div
-                className="flex items-center gap-2 px-3 py-1 rounded-md bg-sky-500/[0.12] border border-sky-300/20 text-sky-100 shadow-inner shadow-sky-950/40"
-                title="Wind pushes shots each frame; same for every player in this match."
-              >
-                <Wind
-                  className="w-4 h-4 shrink-0"
-                  style={{ transform: `scaleX(${wind >= 0 ? 1 : -1})` }}
-                />
-                <span className="text-[11px] font-semibold tabular-nums">
-                  {(wind * 1000).toFixed(1)}
-                </span>
-              </div>
-            );
-          })()}
-          <div className="flex items-center gap-2 px-3 py-1 rounded-md bg-white/[0.07] border border-white/10 text-zinc-100 shadow-inner shadow-black/20">
-            <Clock className="w-4 h-4 text-amber-300" />
-            <span className="text-[11px] font-semibold tabular-nums">{timeLeft}s</span>
-          </div>
-          <div className="h-4 w-px bg-white/10" />
-          <div className="flex items-center gap-4">
-            {room?.players.map((p, i) => (
-              <div
-                key={p.id}
-                className={`flex items-center gap-2 px-3 py-1 rounded-md transition-all ${room.turnIndex === i ? 'bg-emerald-400/[0.16] ring-1 ring-emerald-300/60 text-white' : 'opacity-55'}`}
-              >
-                <div className="w-2 h-2 rounded-full" style={{ backgroundColor: p.color }} />
-                <span className="text-sm font-medium">{p.username}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {isMyTurn && !isFiring && (
-          <motion.div
-            initial={{ opacity: 0, y: -10 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="flex items-center gap-4 px-4 py-1.5 bg-emerald-400 rounded-full text-zinc-950 font-bold text-xs uppercase tracking-widest shadow-lg shadow-emerald-950/30"
-          >
-            Your Turn
-          </motion.div>
-        )}
-      </div>
-
-      {/* Game Area */}
-      <div className="flex-1 relative bg-[#08090d] flex items-center justify-center p-4">
-        <div
-          className="relative shadow-2xl shadow-black/50 rounded-lg overflow-hidden border border-white/10 bg-slate-950"
-          style={{ width: `min(100%, ${CANVAS_WIDTH}px, calc((100vh - 7rem) * ${CANVAS_WIDTH / CANVAS_HEIGHT}))`, aspectRatio: `${CANVAS_WIDTH} / ${CANVAS_HEIGHT}` }}
-        >
-          {/* Background Layer */}
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_18%_14%,rgba(14,165,233,0.24),transparent_25%),linear-gradient(180deg,#10283d_0%,#0b1d2e_46%,#07121e_100%)]" />
-          <div className="absolute right-[10%] top-[9%] h-14 w-14 rounded-full bg-amber-100/90 shadow-[0_0_34px_rgba(253,230,138,0.38)]" />
-          <div
-            className="absolute inset-x-0 bottom-0 h-[48%] bg-slate-900/[0.45]"
-            style={{ clipPath: 'polygon(0 58%, 9% 41%, 18% 55%, 31% 28%, 43% 47%, 55% 22%, 67% 50%, 79% 31%, 91% 48%, 100% 24%, 100% 100%, 0 100%)' }}
-          />
-          <div
-            className="absolute inset-x-0 bottom-0 h-[39%] bg-cyan-950/[0.45]"
-            style={{ clipPath: 'polygon(0 42%, 13% 20%, 24% 48%, 36% 18%, 49% 42%, 60% 26%, 72% 51%, 84% 23%, 100% 43%, 100% 100%, 0 100%)' }}
-          />
-
-          {/* Terrain Layer */}
-          <canvas
-            ref={terrainCanvasRef}
-            width={CANVAS_WIDTH}
-            height={CANVAS_HEIGHT}
-            className="absolute inset-0 h-full w-full"
-            aria-hidden="true"
-          />
-
-          {/* Game Objects Layer */}
-          <canvas
-            ref={canvasRef}
-            width={CANVAS_WIDTH}
-            height={CANVAS_HEIGHT}
-            className="absolute inset-0 h-full w-full"
-            aria-hidden="true"
-          />
-
-          {/* Controls Overlay */}
-          {isMyTurn && !isFiring && (
-            <div className="absolute bottom-3 left-3 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-3 rounded-lg border border-white/10 bg-zinc-950/[0.82] px-3 py-3 shadow-2xl shadow-black/45 backdrop-blur-md">
-              <div className="flex items-center gap-2">
-                {(['bazooka', 'grenade'] as WeaponType[]).map((weapon) => {
-                  const active = selectedWeapon === weapon;
-                  const Icon = weapon === 'bazooka' ? Target : Bomb;
-                  return (
-                    <button
-                      key={weapon}
-                      onClick={() => handleWeaponChange(weapon)}
-                      className={`h-10 w-10 rounded-md border flex items-center justify-center transition-all ${active ? 'bg-emerald-400 text-zinc-950 border-emerald-200 shadow-lg shadow-emerald-950/30' : 'bg-white/5 text-zinc-300 border-white/10 hover:border-white/25 hover:bg-white/10'}`}
-                      title={`${WEAPON_CONFIG[weapon].label} (${weapon === 'bazooka' ? '1' : '2'})`}
-                    >
-                      <Icon className="w-5 h-5" />
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="h-9 w-px bg-white/10 hidden sm:block" />
-              <div className="min-w-44 space-y-2">
-                <div className="flex justify-between text-[10px] font-bold text-zinc-400 uppercase tracking-widest">
-                  <span>Power</span>
-                  <span className="text-zinc-100 tabular-nums">{power}%</span>
-                </div>
-                <input
-                  type="range"
-                  min="10"
-                  max="100"
-                  value={power}
-                  onChange={(e) => handlePowerChange(parseInt(e.target.value))}
-                  className="w-44 accent-emerald-400"
-                  title="Shot power"
-                />
-              </div>
-              <div className="h-9 w-px bg-white/10 hidden sm:block" />
-              <button
-                onClick={handleFire}
-                className="h-12 w-12 bg-emerald-500 hover:bg-emerald-400 rounded-full flex items-center justify-center shadow-lg shadow-emerald-950/40 transition-all active:scale-95"
-                title="Fire"
-              >
-                <Target className="w-6 h-6 text-zinc-950" />
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Winner Modal */}
-      <AnimatePresence>
-        {winner && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-zinc-950/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
-          >
-            <motion.div
-              initial={{ scale: 0.9, y: 20 }}
-              animate={{ scale: 1, y: 0 }}
-              className="bg-zinc-900 border border-zinc-800 p-12 rounded-3xl text-center shadow-2xl max-w-sm w-full"
-            >
-              <div className="w-20 h-20 bg-emerald-500/10 rounded-full flex items-center justify-center mx-auto mb-6">
-                <Trophy className="w-10 h-10 text-emerald-500" />
-              </div>
-              <h2 className="text-3xl font-bold mb-2">Victory!</h2>
-              <p className="text-zinc-400 mb-8">
-                <span className="font-bold text-zinc-100" style={{ color: winner.color }}>{winner.username}</span> is the last worm standing!
-              </p>
-              <button
-                onClick={() => window.location.reload()}
-                className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-4 rounded-xl transition-all"
-              >
-                Play Again
-              </button>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      <GameHeader room={room} timeLeft={timeLeft} isMyTurn={isMyTurn} isFiring={isFiring} />
+      <GameArena
+        gameCanvasRef={canvasRef}
+        terrainCanvasRef={terrainCanvasRef}
+        crosshair={isMyTurn && !isFiring}
+        onPointerMove={handleArenaPointerMove}
+        onPointerDown={handleArenaPointerDown}
+        onWheel={handleArenaWheel}
+        controls={
+          isMyTurn && !isFiring ? (
+            <TurnControls
+              selectedWeapon={selectedWeapon}
+              power={power}
+              onWeaponChange={handleWeaponChange}
+              onPowerChange={handlePowerChange}
+              onFire={handleFire}
+            />
+          ) : null
+        }
+      />
+      <WinnerModal winner={winner} onPlayAgain={() => window.location.reload()} />
     </div>
   );
 }

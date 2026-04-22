@@ -1,7 +1,6 @@
 import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
-import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import {
@@ -129,11 +128,18 @@ async function startServer() {
     console.log('User connected:', socket.id);
 
     socket.on('join-room', ({ roomId, username }) => {
-      let room = rooms.get(roomId);
+      const cleanRoomId = String(roomId ?? '').trim().slice(0, 32);
+      const cleanUsername = String(username ?? '').trim().slice(0, 20);
+      if (!cleanRoomId || !cleanUsername) {
+        socket.emit('error', 'Room ID and username are required');
+        return;
+      }
+
+      let room = rooms.get(cleanRoomId);
       
       if (!room) {
         room = {
-          id: roomId,
+          id: cleanRoomId,
           players: [],
           gameState: 'lobby',
           turnIndex: 0,
@@ -142,7 +148,7 @@ async function startServer() {
           wormTurnCursors: {},
           lastUpdate: Date.now()
         };
-        rooms.set(roomId, room);
+        rooms.set(cleanRoomId, room);
       }
 
       if (room.gameState !== 'lobby') {
@@ -150,15 +156,23 @@ async function startServer() {
         return;
       }
 
+      const existingPlayer = room.players.find((player) => player.id === socket.id);
+      if (existingPlayer) {
+        existingPlayer.username = cleanUsername;
+        socket.join(cleanRoomId);
+        io.to(cleanRoomId).emit('room-update', room);
+        return;
+      }
+
       const player = {
         id: socket.id,
-        username,
+        username: cleanUsername,
         color: `hsl(${Math.random() * 360}, 70%, 50%)`
       };
 
       room.players.push(player);
-      socket.join(roomId);
-      io.to(roomId).emit('room-update', room);
+      socket.join(cleanRoomId);
+      io.to(cleanRoomId).emit('room-update', room);
     });
 
     socket.on('start-game', (roomId) => {
@@ -185,7 +199,7 @@ async function startServer() {
               vx: 0,
               vy: 0,
               hp: 100,
-              name: `${p.username} ${wormIndex + 1}`,
+              name: WORMS_PER_PLAYER === 1 ? p.username : `${p.username} ${wormIndex + 1}`,
               color: p.color,
               facing: playerIndex % 2 === 0 ? 1 : -1,
             };
@@ -267,7 +281,8 @@ async function startServer() {
     });
   });
 
-  if (process.env.NODE_ENV !== 'production') {
+  if (process.env.NODE_ENV === 'development') {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
