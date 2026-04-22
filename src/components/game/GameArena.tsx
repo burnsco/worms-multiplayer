@@ -1,4 +1,4 @@
-import type { PointerEvent, RefObject, WheelEvent, ReactNode } from 'react';
+import { useEffect, useRef, type PointerEvent, type RefObject, type ReactNode } from 'react';
 import { CANVAS_HEIGHT, CANVAS_WIDTH } from '../../types';
 
 export type GameArenaProps = {
@@ -7,7 +7,7 @@ export type GameArenaProps = {
   crosshair: boolean;
   onPointerMove: (e: PointerEvent<HTMLDivElement>) => void;
   onPointerDown: (e: PointerEvent<HTMLDivElement>) => void;
-  onWheel: (e: WheelEvent<HTMLDivElement>) => void;
+  onWheel: (e: WheelEvent) => void;
   controls?: ReactNode;
 };
 
@@ -20,6 +20,15 @@ export function GameArena({
   onWheel,
   controls,
 }: GameArenaProps) {
+  const arenaRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const arena = arenaRef.current;
+    if (!arena) return;
+    arena.addEventListener('wheel', onWheel, { passive: false });
+    return () => arena.removeEventListener('wheel', onWheel);
+  }, [onWheel]);
+
   return (
     <div className="flex-1 relative bg-[#08090d] flex items-center justify-center p-4">
       <div
@@ -30,9 +39,9 @@ export function GameArena({
           width: `min(100%, ${CANVAS_WIDTH}px, calc((100vh - 7rem) * ${CANVAS_WIDTH / CANVAS_HEIGHT}))`,
           aspectRatio: `${CANVAS_WIDTH} / ${CANVAS_HEIGHT}`,
         }}
+        ref={arenaRef}
         onPointerMove={onPointerMove}
         onPointerDown={onPointerDown}
-        onWheel={onWheel}
       >
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_18%_14%,rgba(14,165,233,0.24),transparent_25%),linear-gradient(180deg,#10283d_0%,#0b1d2e_46%,#07121e_100%)]" />
         <div className="pointer-events-none absolute right-[10%] top-[9%] h-14 w-14 rounded-full bg-amber-100/90 shadow-[0_0_34px_rgba(253,230,138,0.38)]" />

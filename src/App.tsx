@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, type PointerEvent as ReactPointerEvent } from 'react';
 import { io, Socket } from 'socket.io-client';
 import confetti from 'canvas-confetti';
 import {
@@ -95,10 +95,10 @@ export default function App() {
 
   const currentPlayerId = () => socket.id;
 
-  const getActiveWorm = () => {
+  const getActiveWorm = useCallback(() => {
     const activeId = activeWormIdRef.current;
     return gameStateRef.current.worms.find(w => w.id === activeId && w.hp > 0) ?? null;
-  };
+  }, []);
 
   const setActiveTurn = useCallback((turnIndex: number, activeWormId?: string, turnEndsAt?: number) => {
     activeWormIdRef.current = activeWormId ?? null;
@@ -683,8 +683,10 @@ export default function App() {
   }, [room?.gameState, explode, requestTurnEnd, syncWormState]);
 
   const handleJoin = () => {
-    if (username && roomId) {
-      socket.emit('join-room', { roomId, username });
+    const cleanUsername = username.trim();
+    const cleanRoomId = roomId.trim();
+    if (cleanUsername && cleanRoomId) {
+      socket.emit('join-room', { roomId: cleanRoomId, username: cleanUsername });
       setInRoom(true);
     }
   };
@@ -771,7 +773,7 @@ export default function App() {
     if (!myWorm || myWorm.playerId !== socket.id) return;
     const { x, y } = canvasPointFromClient(canvas, clientX, clientY);
     aimAngleRef.current = aimAngleFromPointer(myWorm.x, myWorm.y, x, y, MIN_AIM, MAX_AIM);
-  }, []);
+  }, [getActiveWorm]);
 
   const startPointerCharge = useCallback(() => {
     if (!isMyTurnRef.current || isFiringRef.current || isPointerChargingRef.current) return;
@@ -811,7 +813,7 @@ export default function App() {
     pointerCaptureListenersRef.current = { up: onUp, cancel: onCancel };
     window.addEventListener('pointerup', onUp);
     window.addEventListener('pointercancel', onCancel);
-  }, [endPointerChargeSession]);
+  }, [endPointerChargeSession, getActiveWorm]);
 
   const handleMove = useCallback((dir: number) => {
     if (!isMyTurnRef.current || isFiringRef.current) return;
@@ -915,15 +917,38 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [handleMove, handleFire, handleJump]);
 
-  const handlePowerChange = (v: number) => {
+  const handlePowerChange = useCallback((v: number) => {
     const next = clamp(v, POWER_MIN, POWER_MAX);
     powerRef.current = next;
     setPower(next);
-  };
+  }, []);
 
   const handleWeaponChange = (weapon: WeaponType) => {
     setSelectedWeaponSynced(weapon);
   };
+
+  const handleArenaPointerMove = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!isMyTurnRef.current || isFiringRef.current) return;
+    updateAimFromClient(e.clientX, e.clientY);
+  }, [updateAimFromClient]);
+
+  const handleArenaPointerDown = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    const el = e.target as HTMLElement;
+    if (el.closest('button, input, textarea, a, [data-arena-controls]')) return;
+    if (!isMyTurnRef.current || isFiringRef.current) return;
+    e.preventDefault();
+    updateAimFromClient(e.clientX, e.clientY);
+    startPointerCharge();
+  }, [startPointerCharge, updateAimFromClient]);
+
+  const handleArenaWheel = useCallback((e: WheelEvent) => {
+    if (!isMyTurnRef.current || isFiringRef.current) return;
+    if ((e.target as HTMLElement).closest('button, input, textarea, a, [data-arena-controls]')) return;
+    e.preventDefault();
+    const step = (e.deltaY < 0 ? 1 : -1) * (e.shiftKey ? 10 : 5);
+    handlePowerChange(powerRef.current + step);
+  }, [handlePowerChange]);
 
   useEffect(() => {
     if (room?.id) roomIdRef.current = room.id;
@@ -947,14 +972,9 @@ export default function App() {
     return () => {
       if (fireTimeoutRef.current) clearTimeout(fireTimeoutRef.current);
       if (turnEndTimeoutRef.current) clearTimeout(turnEndTimeoutRef.current);
-      if (pointerChargeRafRef.current != null) cancelAnimationFrame(pointerChargeRafRef.current);
-      const listeners = pointerCaptureListenersRef.current;
-      if (listeners) {
-        window.removeEventListener('pointerup', listeners.up);
-        window.removeEventListener('pointercancel', listeners.cancel);
-      }
+      endPointerChargeSession(false);
     };
-  }, []);
+  }, [endPointerChargeSession]);
 
   useEffect(() => {
     if (!isMyTurn || room?.gameState !== 'playing') endPointerChargeSession(false);
@@ -999,26 +1019,9 @@ export default function App() {
         gameCanvasRef={canvasRef}
         terrainCanvasRef={terrainCanvasRef}
         crosshair={isMyTurn && !isFiring}
-        onPointerMove={(e) => {
-          if (!isMyTurnRef.current || isFiringRef.current) return;
-          updateAimFromClient(e.clientX, e.clientY);
-        }}
-        onPointerDown={(e) => {
-          if (e.button !== 0) return;
-          const el = e.target as HTMLElement;
-          if (el.closest('button, input, textarea, a, [data-arena-controls]')) return;
-          if (!isMyTurnRef.current || isFiringRef.current) return;
-          e.preventDefault();
-          updateAimFromClient(e.clientX, e.clientY);
-          startPointerCharge();
-        }}
-        onWheel={(e) => {
-          if (!isMyTurnRef.current || isFiringRef.current) return;
-          if ((e.target as HTMLElement).closest('button, input, textarea, a, [data-arena-controls]')) return;
-          e.preventDefault();
-          const step = (e.deltaY < 0 ? 1 : -1) * (e.shiftKey ? 10 : 5);
-          handlePowerChange(powerRef.current + step);
-        }}
+        onPointerMove={handleArenaPointerMove}
+        onPointerDown={handleArenaPointerDown}
+        onWheel={handleArenaWheel}
         controls={
           isMyTurn && !isFiring ? (
             <TurnControls
